@@ -221,6 +221,30 @@ class FlightSqlSessionTest {
   }
 
   @Test
+  void testSetGetCurrentCatalog() throws Exception {
+    connection.setCurrentCatalog("my_catalog");
+    assertThat(connection.getCurrentCatalog()).isEqualTo("my_catalog");
+  }
+
+  @Test
+  void testSetGetCurrentDbSchema() throws Exception {
+    connection.setCurrentDbSchema("my_schema");
+    assertThat(connection.getCurrentDbSchema()).isEqualTo("my_schema");
+  }
+
+  @Test
+  void testGetCurrentCatalogNotFoundWhenUnset() {
+    AdbcException ex = assertThrows(AdbcException.class, () -> connection.getCurrentCatalog());
+    assertThat(ex.getStatus()).isEqualTo(AdbcStatusCode.NOT_FOUND);
+  }
+
+  @Test
+  void testGetCurrentDbSchemaNotFoundWhenUnset() {
+    AdbcException ex = assertThrows(AdbcException.class, () -> connection.getCurrentDbSchema());
+    assertThat(ex.getStatus()).isEqualTo(AdbcStatusCode.NOT_FOUND);
+  }
+
+  @Test
   void testSetOptionReadOnlyBlobThrows() {
     AdbcException ex =
         assertThrows(

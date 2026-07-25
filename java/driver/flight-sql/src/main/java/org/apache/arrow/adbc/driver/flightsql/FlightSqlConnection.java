@@ -211,6 +211,45 @@ public class FlightSqlConnection implements AdbcConnection {
   }
 
   @Override
+  public String getCurrentCatalog() throws AdbcException {
+    return getStringSessionOption("catalog", "current catalog");
+  }
+
+  @Override
+  public void setCurrentCatalog(String catalog) throws AdbcException {
+    doSetSessionOption("catalog", SessionOptionValueFactory.makeSessionOptionValue(catalog));
+  }
+
+  @Override
+  public String getCurrentDbSchema() throws AdbcException {
+    return getStringSessionOption("schema", "current schema");
+  }
+
+  @Override
+  public void setCurrentDbSchema(String dbSchema) throws AdbcException {
+    doSetSessionOption("schema", SessionOptionValueFactory.makeSessionOptionValue(dbSchema));
+  }
+
+  /** Reads a string-valued session option, matching Go's current-catalog/current-schema. */
+  private String getStringSessionOption(String name, String description) throws AdbcException {
+    final SessionOptionValue value = fetchSessionOptionsOrEmpty().get(name);
+    if (value == null) {
+      throw new AdbcException(
+          "[Flight SQL] " + description + " not supported",
+          null,
+          AdbcStatusCode.NOT_FOUND,
+          null,
+          0);
+    }
+    final Object raw = value.acceptVisitor(FlightSqlSessionUtil.TO_JAVA);
+    if (raw instanceof String) {
+      return (String) raw;
+    }
+    throw AdbcException.internal(
+        "[Flight SQL] server returned non-string " + description + ": " + raw);
+  }
+
+  @Override
   public void setAutoCommit(boolean enableAutoCommit) throws AdbcException {
     if (!enableAutoCommit) {
       throw AdbcException.notImplemented("[Flight SQL] Transaction methods are not supported");

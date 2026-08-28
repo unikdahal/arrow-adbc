@@ -123,19 +123,37 @@ final class FlightSqlSessionUtil {
   }
 
   /**
-   * Casts a raw Java value extracted via {@link #TO_JAVA} to the type requested by a {@link
-   * TypedKey}. The Flight session option type must match the requested type exactly, except that a
-   * string-list option can also be requested as {@link String} to get its JSON representation.
-   * Returns {@code null} for unsupported key types so the caller can delegate to the default {@code
+   * Casts a raw Java value extracted via {@link #TO_JAVA} according to the session option prefix
+   * and requested {@link TypedKey} type. The Flight value type must match exactly; the only
+   * representation conversion is String[] to JSON String for the string-list prefix. Returns
+   * {@code null} for unsupported key types so the caller can delegate to the default {@code
    * AdbcConnection} implementation.
    */
-  static <T> @Nullable T cast(TypedKey<T> key, Object raw, String optionName) throws AdbcException {
+  static <T> @Nullable T cast(
+      TypedKey<T> key, Object raw, String optionName, String prefix) throws AdbcException {
     final Class<T> type = key.getType();
-    if (type == String.class) {
-      if (raw instanceof String) {
+
+    if (prefix.equals(FlightSqlConnectionProperties.SESSION_OPTION_BOOL_PREFIX)) {
+      if (type != Boolean.class) {
+        return null;
+      }
+      if (raw instanceof Boolean) {
         return key.cast(raw);
       }
-      if (raw instanceof String[]) {
+      throw typeMismatch(optionName, raw, type);
+    }
+
+    if (prefix.equals(FlightSqlConnectionProperties.SESSION_OPTION_STRING_LIST_PREFIX)) {
+      if (type == String[].class) {
+        if (raw instanceof String[]) {
+          return key.cast(raw);
+        }
+        throw typeMismatch(optionName, raw, type);
+      }
+      if (type == String.class) {
+        if (!(raw instanceof String[])) {
+          throw typeMismatch(optionName, raw, String[].class);
+        }
         try {
           return key.cast(MAPPER.writeValueAsString(raw));
         } catch (JsonProcessingException e) {
@@ -144,32 +162,31 @@ final class FlightSqlSessionUtil {
               .withCause(e);
         }
       }
-      throw typeMismatch(optionName, raw, type);
+      return null;
     }
-    if (type == Boolean.class) {
-      if (raw instanceof Boolean) {
-        return key.cast(raw);
+
+    if (prefix.equals(FlightSqlConnectionProperties.SESSION_OPTION_PREFIX)) {
+      if (type == String.class) {
+        if (raw instanceof String) {
+          return key.cast(raw);
+        }
+        throw typeMismatch(optionName, raw, type);
       }
-      throw typeMismatch(optionName, raw, type);
-    }
-    if (type == String[].class) {
-      if (raw instanceof String[]) {
-        return key.cast(raw);
+      if (type == Long.class) {
+        if (raw instanceof Long) {
+          return key.cast(raw);
+        }
+        throw typeMismatch(optionName, raw, type);
       }
-      throw typeMismatch(optionName, raw, type);
-    }
-    if (type == Long.class) {
-      if (raw instanceof Long) {
-        return key.cast(raw);
+      if (type == Double.class) {
+        if (raw instanceof Double) {
+          return key.cast(raw);
+        }
+        throw typeMismatch(optionName, raw, type);
       }
-      throw typeMismatch(optionName, raw, type);
+      return null;
     }
-    if (type == Double.class) {
-      if (raw instanceof Double) {
-        return key.cast(raw);
-      }
-      throw typeMismatch(optionName, raw, type);
-    }
+
     return null;
   }
 

@@ -86,8 +86,7 @@ class FlightSqlSessionTest {
             .location(Location.forGrpcInsecure("localhost", 0))
             .middleware(
                 HEADER_CAPTURE_KEY,
-                (info, incomingHeaders, context) ->
-                    new HeaderCaptureMiddleware(incomingHeaders))
+                (info, incomingHeaders, context) -> new HeaderCaptureMiddleware(incomingHeaders))
             .build();
     server.start();
     driver = new FlightSqlDriver(allocator);
@@ -137,7 +136,8 @@ class FlightSqlSessionTest {
 
     Long value =
         connection.getOption(
-            new TypedKey<>(FlightSqlConnectionProperties.SESSION_OPTION_PREFIX + "rows", Long.class));
+            new TypedKey<>(
+                FlightSqlConnectionProperties.SESSION_OPTION_PREFIX + "rows", Long.class));
     assertThat(value).isEqualTo(42L);
   }
 
@@ -217,8 +217,7 @@ class FlightSqlSessionTest {
 
   @Test
   void testNumericTypeMismatchDoesNotNarrow() throws Exception {
-    producer.sessionOptions.put(
-        "number", SessionOptionValueFactory.makeSessionOptionValue(12.9d));
+    producer.sessionOptions.put("number", SessionOptionValueFactory.makeSessionOptionValue(12.9d));
 
     AdbcException ex =
         assertThrows(
@@ -255,7 +254,8 @@ class FlightSqlSessionTest {
 
     Double value =
         connection.getOption(
-            new TypedKey<>(FlightSqlConnectionProperties.SESSION_OPTION_PREFIX + "nan", Double.class));
+            new TypedKey<>(
+                FlightSqlConnectionProperties.SESSION_OPTION_PREFIX + "nan", Double.class));
     assertThat(value).isNaN();
   }
 
@@ -314,7 +314,8 @@ class FlightSqlSessionTest {
             AdbcException.class,
             () ->
                 connection.setOption(
-                    new TypedKey<>(FlightSqlConnectionProperties.SESSION_OPTION_PREFIX, String.class),
+                    new TypedKey<>(
+                        FlightSqlConnectionProperties.SESSION_OPTION_PREFIX, String.class),
                     "value"));
     assertThat(ex.getStatus()).isEqualTo(AdbcStatusCode.INVALID_ARGUMENT);
     assertThat(producer.sessionOptions).isEmpty();
@@ -323,9 +324,9 @@ class FlightSqlSessionTest {
   @Test
   void testNullOptionValueRejected() {
     TypedKey<String> key =
-        new TypedKey<>(FlightSqlConnectionProperties.SESSION_OPTION_PREFIX + "nullable", String.class);
-    AdbcException ex =
-        assertThrows(AdbcException.class, () -> connection.setOption(key, null));
+        new TypedKey<>(
+            FlightSqlConnectionProperties.SESSION_OPTION_PREFIX + "nullable", String.class);
+    AdbcException ex = assertThrows(AdbcException.class, () -> connection.setOption(key, null));
     assertThat(ex.getStatus()).isEqualTo(AdbcStatusCode.INVALID_ARGUMENT);
   }
 

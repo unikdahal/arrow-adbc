@@ -129,7 +129,23 @@ final class FlightSqlSessionUtil {
    * {@code null} for unsupported key types so the caller can delegate to the default {@code
    * AdbcConnection} implementation.
    */
-  static <T> @Nullable T cast(
+  static <T> @Nullable T cast(TypedKey<T> key, Object raw, String optionName) throws AdbcException {
+    final String k = key.getKey();
+    if (k.startsWith(FlightSqlConnectionProperties.SESSION_OPTION_BOOL_PREFIX)) {
+      return cast(
+          key, raw, optionName, FlightSqlConnectionProperties.SESSION_OPTION_BOOL_PREFIX);
+    }
+    if (k.startsWith(FlightSqlConnectionProperties.SESSION_OPTION_STRING_LIST_PREFIX)) {
+      return cast(
+          key, raw, optionName, FlightSqlConnectionProperties.SESSION_OPTION_STRING_LIST_PREFIX);
+    }
+    if (k.startsWith(FlightSqlConnectionProperties.SESSION_OPTION_PREFIX)) {
+      return cast(key, raw, optionName, FlightSqlConnectionProperties.SESSION_OPTION_PREFIX);
+    }
+    return null;
+  }
+
+  private static <T> @Nullable T cast(
       TypedKey<T> key, Object raw, String optionName, String prefix) throws AdbcException {
     final Class<T> type = key.getType();
 

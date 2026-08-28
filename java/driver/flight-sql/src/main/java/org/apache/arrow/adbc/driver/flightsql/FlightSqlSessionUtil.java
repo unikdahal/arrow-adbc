@@ -125,15 +125,14 @@ final class FlightSqlSessionUtil {
   /**
    * Casts a raw Java value extracted via {@link #TO_JAVA} according to the session option prefix
    * and requested {@link TypedKey} type. The Flight value type must match exactly; the only
-   * representation conversion is String[] to JSON String for the string-list prefix. Returns
-   * {@code null} for unsupported key types so the caller can delegate to the default {@code
+   * representation conversion is String[] to JSON String for the string-list prefix. Returns {@code
+   * null} for unsupported key types so the caller can delegate to the default {@code
    * AdbcConnection} implementation.
    */
   static <T> @Nullable T cast(TypedKey<T> key, Object raw, String optionName) throws AdbcException {
     final String k = key.getKey();
     if (k.startsWith(FlightSqlConnectionProperties.SESSION_OPTION_BOOL_PREFIX)) {
-      return cast(
-          key, raw, optionName, FlightSqlConnectionProperties.SESSION_OPTION_BOOL_PREFIX);
+      return cast(key, raw, optionName, FlightSqlConnectionProperties.SESSION_OPTION_BOOL_PREFIX);
     }
     if (k.startsWith(FlightSqlConnectionProperties.SESSION_OPTION_STRING_LIST_PREFIX)) {
       return cast(
@@ -145,8 +144,8 @@ final class FlightSqlSessionUtil {
     return null;
   }
 
-  private static <T> @Nullable T cast(
-      TypedKey<T> key, Object raw, String optionName, String prefix) throws AdbcException {
+  private static <T> @Nullable T cast(TypedKey<T> key, Object raw, String optionName, String prefix)
+      throws AdbcException {
     final Class<T> type = key.getType();
 
     if (prefix.equals(FlightSqlConnectionProperties.SESSION_OPTION_BOOL_PREFIX)) {

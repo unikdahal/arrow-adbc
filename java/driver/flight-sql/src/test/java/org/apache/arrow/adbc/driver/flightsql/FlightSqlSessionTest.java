@@ -24,12 +24,14 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.arrow.adbc.core.AdbcConnection;
 import org.apache.arrow.adbc.core.AdbcDatabase;
 import org.apache.arrow.adbc.core.AdbcDriver;
 import org.apache.arrow.adbc.core.AdbcException;
 import org.apache.arrow.adbc.core.AdbcStatusCode;
 import org.apache.arrow.adbc.core.TypedKey;
+import org.apache.arrow.flight.CallHeaders;
 import org.apache.arrow.flight.CallStatus;
 import org.apache.arrow.flight.CloseSessionRequest;
 import org.apache.arrow.flight.CloseSessionResult;
@@ -37,6 +39,7 @@ import org.apache.arrow.flight.Criteria;
 import org.apache.arrow.flight.FlightDescriptor;
 import org.apache.arrow.flight.FlightInfo;
 import org.apache.arrow.flight.FlightServer;
+import org.apache.arrow.flight.FlightServerMiddleware;
 import org.apache.arrow.flight.FlightStream;
 import org.apache.arrow.flight.GetSessionOptionsRequest;
 import org.apache.arrow.flight.GetSessionOptionsResult;
@@ -45,6 +48,7 @@ import org.apache.arrow.flight.PutResult;
 import org.apache.arrow.flight.Result;
 import org.apache.arrow.flight.SchemaResult;
 import org.apache.arrow.flight.SessionOptionValue;
+import org.apache.arrow.flight.SessionOptionValueFactory;
 import org.apache.arrow.flight.SetSessionOptionsRequest;
 import org.apache.arrow.flight.SetSessionOptionsResult;
 import org.apache.arrow.flight.sql.FlightSqlProducer;
@@ -60,6 +64,10 @@ import org.junit.jupiter.api.Test;
 
 /** Tests for Flight SQL session management (get/set/erase options, CloseSession). */
 class FlightSqlSessionTest {
+  private static final String SESSION_HEADER = "x-adbc-session-test";
+  private static final FlightServerMiddleware.Key<HeaderCaptureMiddleware> HEADER_CAPTURE_KEY =
+      FlightServerMiddleware.Key.of("session-header-capture");
+
   static BufferAllocator allocator;
   static SessionProducer producer;
   static FlightServer server;
@@ -76,12 +84,18 @@ class FlightSqlSessionTest {
             .allocator(allocator)
             .producer(producer)
             .location(Location.forGrpcInsecure("localhost", 0))
+            .middleware(
+                HEADER_CAPTURE_KEY,
+                (info, incomingHeaders, context) ->
+                    new HeaderCaptureMiddleware(incomingHeaders))
             .build();
     server.start();
     driver = new FlightSqlDriver(allocator);
     Map<String, Object> parameters = new HashMap<>();
     AdbcDriver.PARAM_URI.set(
         parameters, Location.forGrpcInsecure("localhost", server.getPort()).getUri().toString());
+    parameters.put(
+        FlightSqlConnectionProperties.RPC_CALL_HEADER_PREFIX + SESSION_HEADER, "session-token");
     database = driver.open(parameters);
   }
 
@@ -113,6 +127,31 @@ class FlightSqlSessionTest {
             new TypedKey<>(
                 FlightSqlConnectionProperties.SESSION_OPTION_PREFIX + "catalog", String.class));
     assertThat(value).isEqualTo("my_catalog");
+  }
+
+  @Test
+  void testSetGetLongOption() throws Exception {
+    connection.setOption(
+        new TypedKey<>(FlightSqlConnectionProperties.SESSION_OPTION_PREFIX + "rows", Long.class),
+        42L);
+
+    Long value =
+        connection.getOption(
+            new TypedKey<>(FlightSqlConnectionProperties.SESSION_OPTION_PREFIX + "rows", Long.class));
+    assertThat(value).isEqualTo(42L);
+  }
+
+  @Test
+  void testSetGetDoubleOption() throws Exception {
+    connection.setOption(
+        new TypedKey<>(FlightSqlConnectionProperties.SESSION_OPTION_PREFIX + "ratio", Double.class),
+        1.25d);
+
+    Double value =
+        connection.getOption(
+            new TypedKey<>(
+                FlightSqlConnectionProperties.SESSION_OPTION_PREFIX + "ratio", Double.class));
+    assertThat(value).isEqualTo(1.25d);
   }
 
   @Test
@@ -161,6 +200,136 @@ class FlightSqlSessionTest {
   }
 
   @Test
+  void testGetStringListOptionAsJson() throws Exception {
+    connection.setOption(
+        new TypedKey<>(
+            FlightSqlConnectionProperties.SESSION_OPTION_STRING_LIST_PREFIX + "tags",
+            String[].class),
+        new String[] {"x", "y"});
+
+    String value =
+        connection.getOption(
+            new TypedKey<>(
+                FlightSqlConnectionProperties.SESSION_OPTION_STRING_LIST_PREFIX + "tags",
+                String.class));
+    assertThat(value).isEqualTo("[\"x\",\"y\"]");
+  }
+
+  @Test
+  void testNumericTypeMismatchDoesNotNarrow() throws Exception {
+    producer.sessionOptions.put(
+        "number", SessionOptionValueFactory.makeSessionOptionValue(12.9d));
+
+    AdbcException ex =
+        assertThrows(
+            AdbcException.class,
+            () ->
+                connection.getOption(
+                    new TypedKey<>(
+                        FlightSqlConnectionProperties.SESSION_OPTION_PREFIX + "number",
+                        Long.class)));
+    assertThat(ex.getStatus()).isEqualTo(AdbcStatusCode.NOT_FOUND);
+    assertThat(ex.getMessage()).contains("Double").contains("Long");
+  }
+
+  @Test
+  void testStringDoesNotCoerceToStringList() throws Exception {
+    producer.sessionOptions.put(
+        "tags", SessionOptionValueFactory.makeSessionOptionValue("not-a-list"));
+
+    AdbcException ex =
+        assertThrows(
+            AdbcException.class,
+            () ->
+                connection.getOption(
+                    new TypedKey<>(
+                        FlightSqlConnectionProperties.SESSION_OPTION_STRING_LIST_PREFIX + "tags",
+                        String[].class)));
+    assertThat(ex.getStatus()).isEqualTo(AdbcStatusCode.NOT_FOUND);
+  }
+
+  @Test
+  void testNonFiniteDoublePreservedForTypedGet() throws Exception {
+    producer.sessionOptions.put(
+        "nan", SessionOptionValueFactory.makeSessionOptionValue(Double.NaN));
+
+    Double value =
+        connection.getOption(
+            new TypedKey<>(FlightSqlConnectionProperties.SESSION_OPTION_PREFIX + "nan", Double.class));
+    assertThat(value).isNaN();
+  }
+
+  @Test
+  void testNonFiniteDoublesSerializedAsStringsInBlob() throws Exception {
+    producer.sessionOptions.put(
+        "nan", SessionOptionValueFactory.makeSessionOptionValue(Double.NaN));
+    producer.sessionOptions.put(
+        "positiveInfinity",
+        SessionOptionValueFactory.makeSessionOptionValue(Double.POSITIVE_INFINITY));
+    producer.sessionOptions.put(
+        "negativeInfinity",
+        SessionOptionValueFactory.makeSessionOptionValue(Double.NEGATIVE_INFINITY));
+
+    String blob =
+        connection.getOption(
+            new TypedKey<>(FlightSqlConnectionProperties.SESSION_OPTIONS, String.class));
+    assertThat(blob).contains("\"nan\":\"NaN\"");
+    assertThat(blob).contains("\"positiveInfinity\":\"Infinity\"");
+    assertThat(blob).contains("\"negativeInfinity\":\"-Infinity\"");
+  }
+
+  @Test
+  void testMalformedStringListJsonRejected() {
+    AdbcException ex =
+        assertThrows(
+            AdbcException.class,
+            () ->
+                connection.setOption(
+                    new TypedKey<>(
+                        FlightSqlConnectionProperties.SESSION_OPTION_STRING_LIST_PREFIX + "tags",
+                        String.class),
+                    "[\"a\","));
+    assertThat(ex.getStatus()).isEqualTo(AdbcStatusCode.INVALID_ARGUMENT);
+    assertThat(ex.getCause()).isNotNull();
+  }
+
+  @Test
+  void testInvalidBooleanRejected() {
+    AdbcException ex =
+        assertThrows(
+            AdbcException.class,
+            () ->
+                connection.setOption(
+                    new TypedKey<>(
+                        FlightSqlConnectionProperties.SESSION_OPTION_BOOL_PREFIX + "flag",
+                        String.class),
+                    "yes"));
+    assertThat(ex.getStatus()).isEqualTo(AdbcStatusCode.INVALID_ARGUMENT);
+  }
+
+  @Test
+  void testEmptyOptionNameRejectedBeforeRpc() {
+    AdbcException ex =
+        assertThrows(
+            AdbcException.class,
+            () ->
+                connection.setOption(
+                    new TypedKey<>(FlightSqlConnectionProperties.SESSION_OPTION_PREFIX, String.class),
+                    "value"));
+    assertThat(ex.getStatus()).isEqualTo(AdbcStatusCode.INVALID_ARGUMENT);
+    assertThat(producer.sessionOptions).isEmpty();
+  }
+
+  @Test
+  void testNullOptionValueRejected() {
+    TypedKey<String> key =
+        new TypedKey<>(FlightSqlConnectionProperties.SESSION_OPTION_PREFIX + "nullable", String.class);
+    AdbcException ex =
+        assertThrows(AdbcException.class, () -> connection.setOption(key, null));
+    assertThat(ex.getStatus()).isEqualTo(AdbcStatusCode.INVALID_ARGUMENT);
+  }
+
+  @Test
   void testEraseOption() throws Exception {
     connection.setOption(
         new TypedKey<>(
@@ -205,6 +374,13 @@ class FlightSqlSessionTest {
   }
 
   @Test
+  void testCloseSessionReceivesConnectionHeaderExactlyOnce() throws Exception {
+    connection.close();
+    connection = null;
+    assertThat(producer.closeSessionHeaderValueCount.get()).isEqualTo(1);
+  }
+
+  @Test
   void testCloseDoesNotThrowWhenServerReturnsUnimplemented() throws Exception {
     producer.rejectClose.set(true);
     connection.close(); // must not throw
@@ -212,8 +388,17 @@ class FlightSqlSessionTest {
   }
 
   @Test
-  void testGetSessionOptionsBlobEmptyWhenServerUnsupported() throws Exception {
+  void testGetSessionOptionsBlobEmptyWhenServerReturnsUnimplemented() throws Exception {
     producer.rejectGetSession.set(true);
+    String blob =
+        connection.getOption(
+            new TypedKey<>(FlightSqlConnectionProperties.SESSION_OPTIONS, String.class));
+    assertThat(blob).isEqualTo("{}");
+  }
+
+  @Test
+  void testGetSessionOptionsBlobEmptyWhenServerReturnsInvalidArgument() throws Exception {
+    producer.rejectGetSessionInvalidArgument.set(true);
     String blob =
         connection.getOption(
             new TypedKey<>(FlightSqlConnectionProperties.SESSION_OPTIONS, String.class));
@@ -232,6 +417,27 @@ class FlightSqlSessionTest {
     assertThat(ex.getStatus()).isEqualTo(AdbcStatusCode.NOT_IMPLEMENTED);
   }
 
+  static class HeaderCaptureMiddleware implements FlightServerMiddleware {
+    final int headerValueCount;
+
+    HeaderCaptureMiddleware(CallHeaders incomingHeaders) {
+      int count = 0;
+      for (String ignored : incomingHeaders.getAll(SESSION_HEADER)) {
+        count++;
+      }
+      headerValueCount = count;
+    }
+
+    @Override
+    public void onBeforeSendingHeaders(CallHeaders outgoingHeaders) {}
+
+    @Override
+    public void onCallCompleted(CallStatus status) {}
+
+    @Override
+    public void onCallErrored(Throwable err) {}
+  }
+
   // ----- Server-side producer -----
 
   static class SessionProducer implements FlightSqlProducer {
@@ -239,12 +445,16 @@ class FlightSqlSessionTest {
     final AtomicBoolean closeSessionCalled = new AtomicBoolean(false);
     final AtomicBoolean rejectClose = new AtomicBoolean(false);
     final AtomicBoolean rejectGetSession = new AtomicBoolean(false);
+    final AtomicBoolean rejectGetSessionInvalidArgument = new AtomicBoolean(false);
+    final AtomicInteger closeSessionHeaderValueCount = new AtomicInteger(-1);
 
     void reset() {
       sessionOptions.clear();
       closeSessionCalled.set(false);
       rejectClose.set(false);
       rejectGetSession.set(false);
+      rejectGetSessionInvalidArgument.set(false);
+      closeSessionHeaderValueCount.set(-1);
     }
 
     @Override
@@ -268,6 +478,10 @@ class FlightSqlSessionTest {
         GetSessionOptionsRequest request,
         CallContext context,
         StreamListener<GetSessionOptionsResult> listener) {
+      if (rejectGetSessionInvalidArgument.get()) {
+        listener.onError(CallStatus.INVALID_ARGUMENT.toRuntimeException());
+        return;
+      }
       if (rejectGetSession.get()) {
         listener.onError(CallStatus.UNIMPLEMENTED.toRuntimeException());
         return;
@@ -281,6 +495,8 @@ class FlightSqlSessionTest {
         CloseSessionRequest request,
         CallContext context,
         StreamListener<CloseSessionResult> listener) {
+      HeaderCaptureMiddleware middleware = context.getMiddleware(HEADER_CAPTURE_KEY);
+      closeSessionHeaderValueCount.set(middleware == null ? -1 : middleware.headerValueCount);
       if (rejectClose.get()) {
         listener.onError(CallStatus.UNIMPLEMENTED.toRuntimeException());
         return;

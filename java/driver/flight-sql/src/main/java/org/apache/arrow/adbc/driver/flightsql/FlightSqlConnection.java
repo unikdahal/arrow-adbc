@@ -243,6 +243,10 @@ public class FlightSqlConnection implements AdbcConnection {
     if (name.isEmpty()) {
       throw AdbcException.invalidArgument("[Flight SQL] Session option name must not be empty");
     }
+    if (!FlightSqlSessionUtil.supportsType(key, prefix)) {
+      return AdbcConnection.super.getOption(key);
+    }
+
     final Object raw =
         FlightSqlSessionUtil.require(fetchSessionOptionsOrEmpty(), name)
             .acceptVisitor(FlightSqlSessionUtil.TO_JAVA);
@@ -301,7 +305,7 @@ public class FlightSqlConnection implements AdbcConnection {
         if (!(value instanceof String[])) {
           throw invalidValueType(k, value, String[].class);
         }
-        arr = ((String[]) value).clone();
+        arr = FlightSqlSessionUtil.validateStringArray((String[]) value);
       } else if (key.getType() == String.class) {
         if (!(value instanceof String)) {
           throw invalidValueType(k, value, String.class);

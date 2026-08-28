@@ -274,10 +274,19 @@ public class FlightSqlConnection implements AdbcConnection {
       final String name =
           k.substring(FlightSqlConnectionProperties.SESSION_OPTION_BOOL_PREFIX.length());
       final boolean b;
-      if (value instanceof Boolean) {
+      if (key.getType() == Boolean.class) {
+        if (!(value instanceof Boolean)) {
+          throw invalidValueType(k, value, Boolean.class);
+        }
         b = (Boolean) value;
+      } else if (key.getType() == String.class) {
+        if (!(value instanceof String)) {
+          throw invalidValueType(k, value, String.class);
+        }
+        b = FlightSqlSessionUtil.parseStrictBoolean((String) value, name);
       } else {
-        b = FlightSqlSessionUtil.parseStrictBoolean(value.toString(), name);
+        AdbcConnection.super.setOption(key, value);
+        return;
       }
       doSetSessionOption(name, SessionOptionValueFactory.makeSessionOptionValue(b));
 
@@ -288,10 +297,19 @@ public class FlightSqlConnection implements AdbcConnection {
       final String name =
           k.substring(FlightSqlConnectionProperties.SESSION_OPTION_STRING_LIST_PREFIX.length());
       final String[] arr;
-      if (value instanceof String[]) {
-        arr = (String[]) value;
+      if (key.getType() == String[].class) {
+        if (!(value instanceof String[])) {
+          throw invalidValueType(k, value, String[].class);
+        }
+        arr = ((String[]) value).clone();
+      } else if (key.getType() == String.class) {
+        if (!(value instanceof String)) {
+          throw invalidValueType(k, value, String.class);
+        }
+        arr = FlightSqlSessionUtil.parseJsonArray((String) value);
       } else {
-        arr = FlightSqlSessionUtil.parseJsonArray(value.toString());
+        AdbcConnection.super.setOption(key, value);
+        return;
       }
       doSetSessionOption(name, SessionOptionValueFactory.makeSessionOptionValue(arr));
 
@@ -301,12 +319,24 @@ public class FlightSqlConnection implements AdbcConnection {
       }
       final String name = k.substring(FlightSqlConnectionProperties.SESSION_OPTION_PREFIX.length());
       final SessionOptionValue sv;
-      if (value instanceof Long) {
+      if (key.getType() == String.class) {
+        if (!(value instanceof String)) {
+          throw invalidValueType(k, value, String.class);
+        }
+        sv = SessionOptionValueFactory.makeSessionOptionValue((String) value);
+      } else if (key.getType() == Long.class) {
+        if (!(value instanceof Long)) {
+          throw invalidValueType(k, value, Long.class);
+        }
         sv = SessionOptionValueFactory.makeSessionOptionValue((Long) value);
-      } else if (value instanceof Double) {
+      } else if (key.getType() == Double.class) {
+        if (!(value instanceof Double)) {
+          throw invalidValueType(k, value, Double.class);
+        }
         sv = SessionOptionValueFactory.makeSessionOptionValue((Double) value);
       } else {
-        sv = SessionOptionValueFactory.makeSessionOptionValue(value.toString());
+        AdbcConnection.super.setOption(key, value);
+        return;
       }
       doSetSessionOption(name, sv);
 
@@ -326,16 +356,31 @@ public class FlightSqlConnection implements AdbcConnection {
             + " - use adbc.flight.sql.session.optionerase.<name> to erase an option");
   }
 
+  private static AdbcException invalidValueType(String key, Object value, Class<?> expectedType) {
+    return AdbcException.invalidArgument(
+        "[Flight SQL] invalid value type for key "
+            + key
+            + ": expected "
+            + expectedType.getSimpleName()
+            + ", got "
+            + value.getClass().getSimpleName());
+  }
+
   @Override
   public void close() throws AdbcException {
     try {
-      // Best-effort: the Go driver also ignores all errors closing the session.
-      client.closeSession(new CloseSessionRequest(), callOptions);
-    } catch (FlightRuntimeException e) {
-      // ignore
-    }
-    try {
-      AutoCloseables.close(clientCache::invalidateAll, client, allocator);
+      AutoCloseables.close(
+          () -> {
+            try {
+              // Best-effort: the Go driver also ignores all errors closing the session.
+              client.closeSession(new CloseSessionRequest());
+            } catch (FlightRuntimeException e) {
+              // ignore
+            }
+          },
+          clientCache::invalidateAll,
+          client,
+          allocator);
     } catch (Exception e) {
       throw AdbcException.internal("[Flight SQL] Failed to close connection").withCause(e);
     }

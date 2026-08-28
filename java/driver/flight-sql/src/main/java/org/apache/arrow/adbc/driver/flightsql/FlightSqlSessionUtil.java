@@ -34,12 +34,43 @@ final class FlightSqlSessionUtil {
   static final ObjectMapper MAPPER = new ObjectMapper();
 
   /**
-   * Extracts a native Java value from a {@link SessionOptionValue}. JSON has no representation for
-   * NaN/Infinity, so non-finite doubles are converted to their {@link String} form (e.g. {@code
-   * "NaN"}) here rather than special-cased later; String[] is defensively cloned; Void returns
-   * {@code null} (callers must handle null before calling {@link #cast}).
+   * Extracts the native Java value from a {@link SessionOptionValue}. String arrays are defensively
+   * cloned; Void returns {@code null} (callers must handle null before calling {@link #cast}).
    */
   static final NoOpSessionOptionValueVisitor<Object> TO_JAVA =
+      new NoOpSessionOptionValueVisitor<Object>() {
+        @Override
+        public Object visit(String v) {
+          return v;
+        }
+
+        @Override
+        public Object visit(boolean v) {
+          return v;
+        }
+
+        @Override
+        public Object visit(long v) {
+          return v;
+        }
+
+        @Override
+        public Object visit(double v) {
+          return v;
+        }
+
+        @Override
+        public Object visit(String[] v) {
+          return v.clone();
+        }
+      };
+
+  /**
+   * Extracts a JSON-safe Java value from a {@link SessionOptionValue}. JSON has no representation
+   * for NaN/Infinity, so non-finite doubles are represented by their {@link String} form (for
+   * example {@code "NaN"}).
+   */
+  static final NoOpSessionOptionValueVisitor<Object> TO_JSON_JAVA =
       new NoOpSessionOptionValueVisitor<Object>() {
         @Override
         public Object visit(String v) {
@@ -71,7 +102,7 @@ final class FlightSqlSessionUtil {
   static String toJson(Map<String, SessionOptionValue> opts) throws AdbcException {
     Map<String, @Nullable Object> map = new LinkedHashMap<>();
     for (Map.Entry<String, SessionOptionValue> e : opts.entrySet()) {
-      map.put(e.getKey(), e.getValue().acceptVisitor(TO_JAVA));
+      map.put(e.getKey(), e.getValue().acceptVisitor(TO_JSON_JAVA));
     }
     try {
       return MAPPER.writeValueAsString(map);
@@ -93,58 +124,67 @@ final class FlightSqlSessionUtil {
 
   /**
    * Casts a raw Java value extracted via {@link #TO_JAVA} to the type requested by a {@link
-   * TypedKey}. {@code raw} must not be {@code null} (Void options must be rejected before calling
-   * this). Returns {@code null} for unsupported types so the caller can delegate to the default
-   * {@code AdbcConnection} implementation.
+   * TypedKey}. The Flight session option type must match the requested type exactly, except that a
+   * string-list option can also be requested as {@link String} to get its JSON representation.
+   * Returns {@code null} for unsupported key types so the caller can delegate to the default {@code
+   * AdbcConnection} implementation.
    */
-  @SuppressWarnings("unchecked")
   static <T> @Nullable T cast(TypedKey<T> key, Object raw, String optionName) throws AdbcException {
     final Class<T> type = key.getType();
     if (type == String.class) {
+      if (raw instanceof String) {
+        return key.cast(raw);
+      }
       if (raw instanceof String[]) {
         try {
-          return (T) MAPPER.writeValueAsString(raw);
+          return key.cast(MAPPER.writeValueAsString(raw));
         } catch (JsonProcessingException e) {
-          throw new AdbcException(
-              "[Flight SQL] Failed to serialize string list option as JSON",
-              e,
-              AdbcStatusCode.INTERNAL,
-              null,
-              0);
+          throw AdbcException.internal(
+                  "[Flight SQL] Failed to serialize string list option as JSON")
+              .withCause(e);
         }
       }
-      return (T) String.valueOf(raw);
+      throw typeMismatch(optionName, raw, type);
     }
     if (type == Boolean.class) {
-      if (raw instanceof Boolean) return (T) raw;
-      return (T) Boolean.valueOf(parseStrictBoolean(String.valueOf(raw), optionName));
+      if (raw instanceof Boolean) {
+        return key.cast(raw);
+      }
+      throw typeMismatch(optionName, raw, type);
     }
     if (type == String[].class) {
-      if (raw instanceof String[]) return (T) raw;
-      return (T) new String[] {String.valueOf(raw)};
+      if (raw instanceof String[]) {
+        return key.cast(raw);
+      }
+      throw typeMismatch(optionName, raw, type);
     }
-    try {
-      if (type == Long.class) {
-        if (raw instanceof Long) return (T) raw;
-        if (raw instanceof Number) return (T) Long.valueOf(((Number) raw).longValue());
-        return (T) Long.valueOf(Long.parseLong(String.valueOf(raw)));
+    if (type == Long.class) {
+      if (raw instanceof Long) {
+        return key.cast(raw);
       }
-      if (type == Double.class) {
-        if (raw instanceof Double) return (T) raw;
-        if (raw instanceof Number) return (T) Double.valueOf(((Number) raw).doubleValue());
-        return (T) Double.valueOf(Double.parseDouble(String.valueOf(raw)));
+      throw typeMismatch(optionName, raw, type);
+    }
+    if (type == Double.class) {
+      if (raw instanceof Double) {
+        return key.cast(raw);
       }
-    } catch (NumberFormatException e) {
-      throw AdbcException.invalidArgument(
-              "[Flight SQL] Session option '"
-                  + optionName
-                  + "' cannot be parsed as "
-                  + type.getSimpleName()
-                  + ": "
-                  + raw)
-          .withCause(e);
+      throw typeMismatch(optionName, raw, type);
     }
     return null;
+  }
+
+  private static AdbcException typeMismatch(String optionName, Object raw, Class<?> expectedType) {
+    return new AdbcException(
+        "[Flight SQL] Session option '"
+            + optionName
+            + "' has type "
+            + raw.getClass().getSimpleName()
+            + ", not "
+            + expectedType.getSimpleName(),
+        null,
+        AdbcStatusCode.NOT_FOUND,
+        null,
+        0);
   }
 
   /** Looks up a session option by name, throwing {@code NOT_FOUND} if absent. */

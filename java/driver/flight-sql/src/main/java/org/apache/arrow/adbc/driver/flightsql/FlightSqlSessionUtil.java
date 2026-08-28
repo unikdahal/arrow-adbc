@@ -18,6 +18,7 @@
 package org.apache.arrow.adbc.driver.flightsql;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -111,15 +112,63 @@ final class FlightSqlSessionUtil {
     }
   }
 
-  /** Parses a JSON string array (used when a string-list option is supplied as JSON). */
+  /** Parses a strict JSON string array (used when a string-list option is supplied as JSON). */
   static String[] parseJsonArray(String json) throws AdbcException {
     try {
-      return MAPPER.readValue(json, String[].class);
+      final JsonNode root = MAPPER.readTree(json);
+      if (root == null || !root.isArray()) {
+        throw AdbcException.invalidArgument(
+            "[Flight SQL] Expected JSON array for string list option, got: " + json);
+      }
+
+      final String[] result = new String[root.size()];
+      for (int i = 0; i < root.size(); i++) {
+        final JsonNode element = root.get(i);
+        if (!element.isTextual()) {
+          throw AdbcException.invalidArgument(
+              "[Flight SQL] Expected string at index "
+                  + i
+                  + " in string list option, got: "
+                  + element);
+        }
+        result[i] = element.textValue();
+      }
+      return result;
     } catch (JsonProcessingException e) {
       throw AdbcException.invalidArgument(
               "[Flight SQL] Expected JSON array for string list option, got: " + json)
           .withCause(e);
     }
+  }
+
+  /** Validates and defensively copies a direct string-list option value. */
+  static String[] validateStringArray(String[] values) throws AdbcException {
+    if (values == null) {
+      throw AdbcException.invalidArgument("[Flight SQL] String list option must not be null");
+    }
+    final String[] result = values.clone();
+    for (int i = 0; i < result.length; i++) {
+      if (result[i] == null) {
+        throw AdbcException.invalidArgument(
+            "[Flight SQL] String list option contains null at index " + i);
+      }
+    }
+    return result;
+  }
+
+  /** Returns whether the requested key type is supported by the given session option prefix. */
+  static boolean supportsType(TypedKey<?> key, String prefix) {
+    final Class<?> type = key.getType();
+    if (prefix.equals(FlightSqlConnectionProperties.SESSION_OPTION_BOOL_PREFIX)) {
+      return type == Boolean.class;
+    }
+    if (prefix.equals(FlightSqlConnectionProperties.SESSION_OPTION_STRING_LIST_PREFIX)) {
+      return type == String[].class || type == String.class;
+    }
+    if (prefix.equals(FlightSqlConnectionProperties.SESSION_OPTION_PREFIX)) {
+      return type == String.class || type == Long.class || type == Double.class;
+    }
+    return false;
   }
 
   /**

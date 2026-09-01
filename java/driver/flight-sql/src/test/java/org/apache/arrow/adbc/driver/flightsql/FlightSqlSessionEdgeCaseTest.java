@@ -86,14 +86,12 @@ class FlightSqlSessionEdgeCaseTest {
   void testStringListJsonRejectsNonStringValues() {
     TypedKey<String> key =
         new TypedKey<>(
-            FlightSqlConnectionProperties.SESSION_OPTION_STRING_LIST_PREFIX + "tags",
-            String.class);
+            FlightSqlConnectionProperties.SESSION_OPTION_STRING_LIST_PREFIX + "tags", String.class);
 
     String[] invalidValues =
         new String[] {"null", "[null]", "[1]", "[true]", "[1.5]", "[{}]", "[[]]"};
     for (String json : invalidValues) {
-      AdbcException ex =
-          assertThrows(AdbcException.class, () -> connection.setOption(key, json));
+      AdbcException ex = assertThrows(AdbcException.class, () -> connection.setOption(key, json));
       assertThat(ex.getStatus()).as(json).isEqualTo(AdbcStatusCode.INVALID_ARGUMENT);
     }
   }
@@ -107,8 +105,7 @@ class FlightSqlSessionEdgeCaseTest {
 
     AdbcException ex =
         assertThrows(
-            AdbcException.class,
-            () -> connection.setOption(key, new String[] {"valid", null}));
+            AdbcException.class, () -> connection.setOption(key, new String[] {"valid", null}));
     assertThat(ex.getStatus()).isEqualTo(AdbcStatusCode.INVALID_ARGUMENT);
   }
 
